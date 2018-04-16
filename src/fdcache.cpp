@@ -1,3 +1,5 @@
+//Chris You-> Implementation of Rc4(Md5) encryption/decryption 
+
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
@@ -39,6 +41,13 @@
 #include <map>
 #include <list>
 #include <vector>
+#include <string>
+#include "rc4_enc.c"
+#include "md5.h"
+#include "rc4_skey.c"
+#include "md5.h"
+#include <fcntl.h>
+#include <fstream>
 
 #include "common.h"
 #include "fdcache.h"
@@ -49,10 +58,39 @@
 
 using namespace std;
 
+//Encryption-Decryption Function
+void RC4_Encryption(int fd){
+string pass = "default_key";
+unsigned char hashed_key[MD5_DIGEST_LENGTH];
+char in[sizeof(pass)];
+strcpy(in,pass.c_str());
+MD5((unsigned char*)&in, strlen(in), (unsigned char*)&hashed_key);
+int fileLength = lseek(fd, 0, SEEK_END); // length of file
+unsigned char* fileData;
+fileData = (unsigned char*) calloc(fileLength, sizeof(char));
+
+if (0 == (pread(fd , fileData, fileLength, 0))){ // 
+cout << "Error reading file." << endl;
+free (fileData);
+}
+string change(reinterpret_cast<char const*>(fileData), fileLength); // string conversion
+
+//encryption-decryption
+RC4_KEY key;
+int length = change.length();
+unsigned char *buff = (unsigned char*)malloc(length-1);
+memset(buff, 0, length-1);
+RC4_set_key(&key, sizeof(hashed_key) ,(const unsigned char*)hashed_key); 
+RC4(&key, length, (const unsigned char*)change.c_str(), buff);
+string result((char*)buff, length);
+pwrite(fd, result.c_str(), fileLength, 0);
+free (buff);
+}
+
 //------------------------------------------------
 // Symbols
 //------------------------------------------------
-static const int MAX_MULTIPART_CNT = 10 * 1000;  // S3 multipart max count
+#define MAX_MULTIPART_CNT   10000                   // S3 multipart max count
 
 //
 // For cache directory top path
@@ -756,24 +794,20 @@ int FdEntity::OpenMirrorFile(void)
     return -EIO;
   }
 
-  // try to link mirror file
-  while(true){
-    // make random(temp) file path
-    // (do not care for threading, because allowed any value returned.)
-    //
-    char         szfile[NAME_MAX + 1];
-    unsigned int seed = static_cast<unsigned int>(time(NULL));
-    sprintf(szfile, "%x.tmp", rand_r(&seed));
-    mirrorpath = bupdir + "/" + szfile;
+  // make mirror file path
+  char szfile[NAME_MAX + 1];
+  if(NULL == tmpnam(szfile)){
+    S3FS_PRN_ERR("could not get temporary file name.");
+    return -EIO;
+  }
+  char* ppos = strrchr(szfile, '/');
+  ++ppos;
+  mirrorpath = bupdir + "/" + ppos;
 
-    // link mirror file to cache file
-    if(0 == link(cachepath.c_str(), mirrorpath.c_str())){
-      break;
-    }
-    if(EEXIST != errno){
-      S3FS_PRN_ERR("could not link mirror file(%s) to cache file(%s) by errno(%d).", mirrorpath.c_str(), cachepath.c_str(), errno);
-      return -errno;
-    }
+  // link mirror file to cache file
+  if(-1 == link(cachepath.c_str(), mirrorpath.c_str())){
+    S3FS_PRN_ERR("could not link mirror file(%s) to cache file(%s) by errno(%d).", mirrorpath.c_str(), cachepath.c_str(), errno);
+    return -errno;
   }
 
   // open mirror file
@@ -1001,10 +1035,10 @@ bool FdEntity::OpenAndLoadAll(headers_t* pmeta, size_t* size, bool force_load)
 
 bool FdEntity::GetStats(struct stat& st)
 {
-  AutoLock auto_lock(&fdent_lock);
   if(-1 == fd){
     return false;
   }
+  AutoLock auto_lock(&fdent_lock);
 
   memset(&st, 0, sizeof(struct stat)); 
   if(-1 == fstat(fd, &st)){
@@ -1021,9 +1055,9 @@ int FdEntity::SetMtime(time_t time)
   if(-1 == time){
     return 0;
   }
-
-  AutoLock auto_lock(&fdent_lock);
   if(-1 != fd){
+    AutoLock auto_lock(&fdent_lock);
+
     struct timeval tv[2];
     tv[0].tv_sec = time;
     tv[0].tv_usec= 0L;
@@ -1050,7 +1084,6 @@ int FdEntity::SetMtime(time_t time)
 
 bool FdEntity::UpdateMtime(void)
 {
-  AutoLock auto_lock(&fdent_lock);
   struct stat st;
   if(!GetStats(st)){
     return false;
@@ -1072,21 +1105,18 @@ bool FdEntity::GetSize(size_t& size)
 
 bool FdEntity::SetMode(mode_t mode)
 {
-  AutoLock auto_lock(&fdent_lock);
   orgmeta["x-amz-meta-mode"] = str(mode);
   return true;
 }
 
 bool FdEntity::SetUId(uid_t uid)
 {
-  AutoLock auto_lock(&fdent_lock);
   orgmeta["x-amz-meta-uid"] = str(uid);
   return true;
 }
 
 bool FdEntity::SetGId(gid_t gid)
 {
-  AutoLock auto_lock(&fdent_lock);
   orgmeta["x-amz-meta-gid"] = str(gid);
   return true;
 }
@@ -1096,7 +1126,6 @@ bool FdEntity::SetContentType(const char* path)
   if(!path){
     return false;
   }
-  AutoLock auto_lock(&fdent_lock);
   orgmeta["Content-Type"] = S3fsCurl::LookupMimeType(string(path));
   return true;
 }
@@ -1134,9 +1163,11 @@ int FdEntity::Load(off_t start, size_t size)
   if(-1 == fd){
     return -EBADF;
   }
+
   AutoLock auto_lock(&fdent_lock);
 
   int result = 0;
+
 
   // check loaded area & load
   fdpage_list_t unloaded_list;
@@ -1155,7 +1186,7 @@ int FdEntity::Load(off_t start, size_t size)
       size_t over_size = (*iter)->bytes - need_load_size;
 
       // download
-      if(static_cast<size_t>(2 * S3fsCurl::GetMultipartSize()) <= need_load_size && !nomultipart){ // default 20MB
+      if(static_cast<size_t>(2 * S3fsCurl::GetMultipartSize()) < need_load_size && !nomultipart){ // default 20MB
         // parallel request
         // Additional time is needed for large files
         time_t backup = 0;
@@ -1179,12 +1210,17 @@ int FdEntity::Load(off_t start, size_t size)
         break;
       }
 
+//run encryption-decryption function
+RC4_Encryption(fd);
+
+
       // initialize for the area of over original size
       if(0 < over_size){
         if(0 != (result = FdEntity::FillFile(fd, 0, over_size, (*iter)->offset + need_load_size))){
           S3FS_PRN_ERR("failed to fill rest bytes for fd(%d). errno(%d)", fd, result);
           break;
         }
+
         // set modify flag
         is_modify = false;
       }
@@ -1443,6 +1479,11 @@ int FdEntity::RowFlush(const char* tpath, bool force_sync)
     return 0;
   }
 
+//run encryption-decryption function
+RC4_Encryption(fd);
+
+
+
   // If there is no loading all of the area, loading all area.
   size_t restsize = pagelist.GetTotalUnloadedPageSize();
   if(0 < restsize){
@@ -1516,6 +1557,8 @@ int FdEntity::RowFlush(const char* tpath, bool force_sync)
       S3fsCurl s3fscurl(true);
       result = s3fscurl.PutRequest(tpath ? tpath : path.c_str(), orgmeta, fd);
     }
+
+
 
     // seek to head of file.
     if(0 == result && 0 != lseek(fd, 0, SEEK_SET)){
@@ -1917,7 +1960,7 @@ size_t FdManager::SetEnsureFreeDiskSpace(size_t size)
   return old;
 }
 
-uint64_t FdManager::GetFreeDiskSpace(const char* path)
+fsblkcnt_t FdManager::GetFreeDiskSpace(const char* path)
 {
   struct statvfs vfsbuf;
   string         ctoppath;
@@ -1939,12 +1982,12 @@ uint64_t FdManager::GetFreeDiskSpace(const char* path)
     S3FS_PRN_ERR("could not get vfs stat by errno(%d)", errno);
     return 0;
   }
-  return (vfsbuf.f_bavail * vfsbuf.f_frsize);
+  return (vfsbuf.f_bavail * vfsbuf.f_bsize);
 }
 
 bool FdManager::IsSafeDiskSpace(const char* path, size_t size)
 {
-  uint64_t fsize = FdManager::GetFreeDiskSpace(path);
+  fsblkcnt_t fsize = FdManager::GetFreeDiskSpace(path);
   return ((size + FdManager::GetEnsureFreeDiskSpace()) <= fsize);
 }
 
@@ -2116,7 +2159,6 @@ FdEntity* FdManager::ExistOpen(const char* path, int existfd, bool ignore_existf
 
 void FdManager::Rename(const std::string &from, const std::string &to)
 {
-  AutoLock auto_lock(&FdManager::fd_manager_lock);
   fdent_map_t::iterator iter = fent.find(from);
   if(fent.end() != iter){
     // found
