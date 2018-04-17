@@ -2,6 +2,7 @@
 #include <string>
 #include <fstream>
 #include "rc4_enc.c"
+#include "md5.h"
 #include "rc4_skey.c"
 using namespace std;
 
@@ -48,10 +49,12 @@ void encryptDecrypt(int argc, char* argv[]){
 
 	printf("Args: %d\n", argc);
 	ifstream pass;
-	pass.open("RC4_Key.txt"); 
-		printf("Pass: yes\n");
 		string password;
 		getline(pass,password);
+		unsigned char hashed_key[MD5_DIGEST_LENGTH];
+		char in[sizeof(argv[3])];
+		strcpy(in, argv[3]);
+		MD5((unsigned char*)&in, strlen(in), (unsigned char*)&hashed_key);
 		//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	        //Input and output filestreams
 	        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -70,7 +73,7 @@ void encryptDecrypt(int argc, char* argv[]){
 		//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                 //Encryption
                 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                RC4_set_key(&key, strlen(argv[3]) - 1, (const unsigned char*)argv[3]);
+                RC4_set_key(&key, sizeof(hashed_key), (const unsigned char*)hashed_key);
                 RC4(&key, length, (const unsigned char*)input.c_str(), buffer);
                 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
                 //Write to file
