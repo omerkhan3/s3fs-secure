@@ -1,5 +1,3 @@
-//Chris You-> Implementation of Rc4(Md5) encryption/decryption 
-
 /*
  * s3fs - FUSE-based file system backed by Amazon S3
  *
